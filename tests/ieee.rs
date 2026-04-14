@@ -2,7 +2,9 @@
 extern crate rustc_apfloat;
 
 use core::cmp::Ordering;
-use rustc_apfloat::ieee::{BFloat, Double, Float8E4M3FN, Float8E5M2, Half, Quad, Single, X87DoubleExtended};
+use rustc_apfloat::ieee::{
+    BFloat, Double, Float8E4M3FN, Float8E4M3FNUZ, Float8E5M2, Float8E5M2FNUZ, Half, Quad, Single, X87DoubleExtended,
+};
 use rustc_apfloat::{Category, ExpInt, IEK_INF, IEK_NAN, IEK_ZERO};
 use rustc_apfloat::{Float, FloatConvert, Round, Status};
 
@@ -84,8 +86,10 @@ trait ToF32LosslessViaConvertToSingle: FloatConvert<Single> {
 }
 impl ToF32LosslessViaConvertToSingle for Half {}
 impl ToF32LosslessViaConvertToSingle for BFloat {}
-impl ToF32LosslessViaConvertToSingle for Float8E5M2 {}
 impl ToF32LosslessViaConvertToSingle for Float8E4M3FN {}
+impl ToF32LosslessViaConvertToSingle for Float8E4M3FNUZ {}
+impl ToF32LosslessViaConvertToSingle for Float8E5M2 {}
+impl ToF32LosslessViaConvertToSingle for Float8E5M2FNUZ {}
 
 trait ToF64LosslessViaConvertToDouble: FloatConvert<Double> {
     fn to_f64(self) -> f64 {
@@ -1486,10 +1490,38 @@ fn nan() {
         (0x7ff7ffffffffae72, true, false, 0xffffffffffffae72),
         (0x7ff1aaaaaaaaae72, true, false, 0x0001aaaaaaaaae72),
     ];
+    let tests_8e5m2fnuz = [
+        // expected SNaN Neg payload
+        (0x80, false, false, 0xaa),
+        (0x80, false, true, 0xaa),
+        (0x80, true, false, 0xaa),
+        (0x80, true, true, 0xaa),
+        (0x80, false, false, 0xaa),
+        (0x80, false, true, 0xaa),
+        (0x80, true, false, 0xaa),
+        (0x80, true, true, 0xaa),
+    ];
+    let tests_8e4m3fnuz = [
+        // expected SNaN Neg payload
+        (0x80, false, false, 0xaa),
+        (0x80, false, true, 0xaa),
+        (0x80, true, false, 0xaa),
+        (0x80, true, true, 0xaa),
+        (0x80, false, false, 0xaa),
+        (0x80, false, true, 0xaa),
+        (0x80, true, false, 0xaa),
+        (0x80, true, true, 0xaa),
+    ];
     for (expected, signaling, negative, payload) in tests_single {
         assert_eq!(expected, nanbits_from_u128::<Single>(signaling, negative, payload));
     }
     for (expected, signaling, negative, payload) in tests_double {
+        assert_eq!(expected, nanbits_from_u128::<Double>(signaling, negative, payload));
+    }
+    for (expected, signaling, negative, payload) in tests_8e5m2fnuz {
+        assert_eq!(expected, nanbits_from_u128::<Double>(signaling, negative, payload));
+    }
+    for (expected, signaling, negative, payload) in tests_8e4m3fnuz {
         assert_eq!(expected, nanbits_from_u128::<Double>(signaling, negative, payload));
     }
 }
@@ -1846,6 +1878,8 @@ fn largest() {
     assert_eq!(3.402823466e+38, Single::largest().to_f32());
     assert_eq!(1.7976931348623158e+308, Double::largest().to_f64());
     assert_eq!(448.0, Float8E4M3FN::largest().to_f64());
+    assert_eq!(240.0, Float8E4M3FNUZ::largest().to_f64());
+    assert_eq!(57344.0, Float8E5M2FNUZ::largest().to_f64());
 }
 
 #[test]
@@ -1873,6 +1907,20 @@ fn smallest() {
 
     let test = -Quad::SMALLEST;
     let expected = "-0x0.0000000000000000000000000001p-16382".parse::<Quad>().unwrap();
+    assert!(test.is_negative());
+    assert!(test.is_finite_non_zero());
+    assert!(test.is_denormal());
+    assert!(test.bitwise_eq(expected));
+
+    let test = Float8E5M2FNUZ::SMALLEST;
+    let expected = "0x0.4p-15".parse::<Float8E5M2FNUZ>().unwrap();
+    assert!(test.is_negative());
+    assert!(test.is_finite_non_zero());
+    assert!(test.is_denormal());
+    assert!(test.bitwise_eq(expected));
+
+    let test = Float8E4M3FNUZ::SMALLEST;
+    let expected = "0x0.2p-7".parse::<Float8E4M3FNUZ>().unwrap();
     assert!(test.is_negative());
     assert!(test.is_finite_non_zero());
     assert!(test.is_denormal());
@@ -1928,6 +1976,22 @@ fn smallest_normalized() {
     assert!(!test.is_denormal());
     assert!(test.bitwise_eq(expected));
     assert!(test.is_smallest_normalized());
+
+    let test = Float8E5M2FNUZ::smallest_normalized();
+    let expected = "0x1.0p-15".parse::<Float8E5M2FNUZ>().unwrap();
+    assert!(!test.is_negative());
+    assert!(test.is_finite_non_zero());
+    assert!(!test.is_denormal());
+    assert!(test.bitwise_eq(expected));
+    assert!(test.is_smallest_normalized());
+
+    let test = Float8E4M3FNUZ::smallest_normalized();
+    let expected = "0x1.0p-7".parse::<Float8E4M3FNUZ>().unwrap();
+    assert!(!test.is_negative());
+    assert!(test.is_finite_non_zero());
+    assert!(!test.is_denormal());
+    assert!(test.bitwise_eq(expected));
+    assert!(test.is_smallest_normalized());
 }
 
 #[test]
@@ -1940,29 +2004,35 @@ fn zero() {
     assert_eq!(-0.0, Double::from_f64(-0.0).to_f64());
     assert!(Double::from_f64(-0.0).is_negative());
 
-    fn test<F: Float>(sign: bool, bits: u128) {
+    fn test<F: Float>(sign: bool, signed_zero: bool, bits: u128) {
         let test = if sign { -F::ZERO } else { F::ZERO };
         let pattern = if sign { "-0x0p+0" } else { "0x0p+0" };
         let expected = pattern.parse::<F>().unwrap();
         assert!(test.is_zero());
-        assert_eq!(sign, test.is_negative());
+        if signed_zero {
+            assert_eq!(sign, test.is_negative());
+        }
         assert!(test.bitwise_eq(expected));
         assert_eq!(bits, test.to_bits());
     }
-    test::<Half>(false, 0);
-    test::<Half>(true, 0x8000);
-    test::<Single>(false, 0);
-    test::<Single>(true, 0x80000000);
-    test::<Double>(false, 0);
-    test::<Double>(true, 0x8000000000000000);
-    test::<Quad>(false, 0);
-    test::<Quad>(true, 0x8000000000000000_0000000000000000);
-    test::<X87DoubleExtended>(false, 0);
-    test::<X87DoubleExtended>(true, 0x8000_0000000000000000);
-    test::<Float8E5M2>(false, 0);
-    test::<Float8E5M2>(true, 0x80);
-    test::<Float8E4M3FN>(false, 0);
-    test::<Float8E4M3FN>(true, 0x80);
+    test::<Half>(false, true, 0);
+    test::<Half>(true, true, 0x8000);
+    test::<Single>(false, true, 0);
+    test::<Single>(true, true, 0x80000000);
+    test::<Double>(false, true, 0);
+    test::<Double>(true, true, 0x8000000000000000);
+    test::<Quad>(false, true, 0);
+    test::<Quad>(true, true, 0x8000000000000000_0000000000000000);
+    test::<X87DoubleExtended>(false, true, 0);
+    test::<X87DoubleExtended>(true, true, 0x8000_0000000000000000);
+    test::<Float8E5M2>(false, true, 0);
+    test::<Float8E5M2>(true, true, 0x80);
+    test::<Float8E5M2FNUZ>(false, false, 0);
+    test::<Float8E5M2FNUZ>(true, false, 0);
+    test::<Float8E4M3FN>(false, true, 0);
+    test::<Float8E4M3FN>(true, true, 0x80);
+    test::<Float8E4M3FNUZ>(false, false, 0);
+    test::<Float8E4M3FNUZ>(true, false, 0);
 }
 
 #[test]
@@ -1971,6 +2041,10 @@ fn copy_sign() {
     assert!(Double::from_f64(42.0).bitwise_eq(Double::from_f64(-42.0).copy_sign(Double::from_f64(1.0),),));
     assert!(Double::from_f64(-42.0).bitwise_eq(Double::from_f64(-42.0).copy_sign(Double::from_f64(-1.0),),));
     assert!(Double::from_f64(42.0).bitwise_eq(Double::from_f64(42.0).copy_sign(Double::from_f64(1.0),),));
+
+    // For floating-point formats with unsigned 0, copySign() to a zero is a noop
+    assert!(Float8E4M3FNUZ::ZERO.bitwise_eq(Float8E4M3FNUZ::ZERO.copy_sign(Float8E4M3FNUZ::from_f64(-1.0))));
+    // assert!(Double::from_f64(42.0).bitwise_eq(Double::from_f64(42.0).copy_sign(Double::from_f64(1.0),),));
 }
 
 #[test]
@@ -2084,6 +2158,11 @@ fn convert() {
     let test: BFloat = unpack!(status=, test.convert_r(Round::NearestTiesToAway, &mut loses_info));
     assert_eq!(0x01, test.to_bits());
     assert!(loses_info);
+}
+
+#[test]
+fn float_8uz_convert() {
+    todo!()
 }
 
 #[test]
@@ -4306,6 +4385,12 @@ fn x87_next() {
 }
 
 #[test]
+fn float8_exhaustive_pair() {
+    // Test each pair of 8-bit floats with non-standard semantics
+    todo!()
+}
+
+#[test]
 fn convert_e4m3fn_to_e5m2() {
     let mut status;
     let mut loses_info = false;
@@ -4611,7 +4696,509 @@ fn float8e4m3fn_exhaustive() {
 }
 
 #[test]
+fn float_8e5m2fnuz_next() {
+    let mut status;
+
+  // 1. NextUp of largest bit pattern is nan
+  let test = unpack!(status=, Float8E5M2FNUZ::largest().next_up());
+  let expected = Float8E5M2FNUZ::NAN;
+  assert_eq!(status, Status::OK);
+  assert!(!test.is_infinite());
+  assert!(!test.is_zero());
+  assert!(test.is_nan());
+  assert!(test.bitwise_eq(expected));
+
+  // 2. NextUp of smallest negative denormal is +0
+  let test = unpack!(status=, (-Float8E5M2FNUZ::SMALLEST).next_up());
+  let expected = Float8E5M2FNUZ::ZERO;
+  assert_eq!(status, Status::OK);
+  assert!(!test.is_neg_zero());
+  assert!(test.is_pos_zero());
+  assert!(test.bitwise_eq(expected));
+
+  // 3. nextDown of negative of largest value is NaN
+  let test = unpack!(status=, (-Float8E5M2FNUZ::largest()).next_down());
+  let expected = Float8E5M2FNUZ::NAN;
+  assert_eq!(status, Status::OK);
+  assert!(!test.is_infinite());
+  assert!(!test.is_zero());
+  assert!(test.is_nan());
+  assert!(test.bitwise_eq(expected));
+
+  // 4. nextDown of +0 is smallest negative denormal
+  let test = unpack!(status=, Float8E5M2FNUZ::ZERO.next_down());
+  let expected = -Float8E5M2FNUZ::SMALLEST;
+  assert_eq!(status, Status::OK);
+  assert!(!test.is_zero());
+  assert!(test.is_denormal());
+  assert!(test.bitwise_eq(expected));
+
+  // 5. nextUp of NaN is NaN
+  let test = unpack!(status=, Float8E5M2FNUZ::NAN.next_up());
+  let expected = -Float8E5M2FNUZ::NAN;
+  assert_eq!(status, Status::OK);
+  assert!(test.is_nan());
+  assert!(test.bitwise_eq(expected));
+
+  // 6. nextDown of NaN is NaN
+  let test = unpack!(status=, Float8E5M2FNUZ::NAN.next_down());
+  let expected = -Float8E5M2FNUZ::NAN;
+  assert_eq!(status, Status::OK);
+  assert!(test.is_nan());
+  assert!(test.bitwise_eq(expected));
+}
+
+#[test]
+fn float8e5m2fnuz_change_sign() {
+  let test =  "1.0".parse::<Float8E5M2FNUZ>().unwrap();
+  let expected =  "-1.0".parse::<Float8E5M2FNUZ>().unwrap();
+  assert!((-test).bitwise_eq(expected));
+
+  let test = Float8E5M2FNUZ::ZERO;
+  assert!((-test).bitwise_eq(test));
+
+  let test =Float8E5M2FNUZ::NAN;
+  assert!((-test).bitwise_eq(test));
+}
+
+#[test]
+fn float8e5m2fnuz_from_string() {
+  // Exactly representable
+  assert_eq!(57344.0,
+             "57344".parse::<Float8E5M2FNUZ>().unwrap().to_f64());
+  // Round down to maximum value
+  assert_eq!(57344.0,
+             "59392".parse::<Float8E5M2FNUZ>().unwrap().to_f64());
+  // Round up, causing overflow to NaN
+  assert!( "61440".parse::<Float8E5M2FNUZ>().unwrap().is_nan());
+  // Overflow without rounding
+  assert!( "131072".parse::<Float8E5M2FNUZ>().unwrap().is_nan());
+  // Inf converted to NaN
+  assert!( "inf".parse::<Float8E5M2FNUZ>().unwrap().is_nan());
+  // NaN converted to NaN
+  assert!( "nan".parse::<Float8E5M2FNUZ>().unwrap().is_nan());
+  // Negative zero converted to positive zero
+  assert!( "-0".parse::<Float8E5M2FNUZ>().unwrap().is_pos_zero());
+}
+
+#[test]
+fn UnsignedZeroArithmeticSpecial() {
+  // Float semantics with only unsigned zero (ex. Float8E4M3FNUZ) violate the
+  // IEEE rules about signs in arithmetic operations when producing zeros,
+  // because they only have one zero. Most of the rest of the complexities of
+  // arithmetic on these values are covered by the other Float8 types' test
+  // cases and so are not repeated here.
+
+  // The IEEE round towards negative rule doesn't apply
+  APFloat test = APFloat::getSmallest(Float8E4M3FNUZ());
+  APFloat rhs = test;
+  assert_eq!(test.subtract(rhs, APFloat::rmTowardNegative), APFloat::opOK);
+  assert!(test.is_zero());
+  assert!(!test.isNegative());
+
+  // Multiplication of (small) * (-small) is +0
+  test = APFloat::getSmallestNormalized(Float8E4M3FNUZ());
+  rhs = -test;
+  assert_eq!(test.multiply(rhs, APFloat::rmNearestTiesToAway),
+            APFloat::opInexact | APFloat::opUnderflow);
+  assert!(test.is_zero());
+  assert!(!test.isNegative());
+
+  // Dividing the negatize float_min by anything gives +0
+  test = APFloat::getSmallest(Float8E4M3FNUZ(), true);
+  rhs = APFloat(Float8E4M3FNUZ(), "2.0");
+  assert_eq!(test.divide(rhs, APFloat::rmNearestTiesToEven),
+            APFloat::opInexact | APFloat::opUnderflow);
+  assert!(test.is_zero());
+  assert!(!test.isNegative());
+
+  // Remainder can't copy sign because there's only one zero
+  test = APFloat(Float8E4M3FNUZ(), "-4.0");
+  rhs = APFloat(Float8E4M3FNUZ(), "2.0");
+  assert_eq!(test.remainder(rhs), APFloat::opOK);
+  assert!(test.is_zero());
+  assert!(!test.isNegative());
+
+  // And same for mod
+  test = APFloat(Float8E4M3FNUZ(), "-4.0");
+  rhs = APFloat(Float8E4M3FNUZ(), "2.0");
+  assert_eq!(test.mod(rhs), APFloat::opOK);
+  assert!(test.is_zero());
+  assert!(!test.isNegative());
+
+  // FMA correctly handles both the multiply and add parts of all this
+  test = APFloat(Float8E4M3FNUZ(), "2.0");
+  rhs = test;
+  APFloat addend = APFloat(Float8E4M3FNUZ(), "-4.0");
+  assert_eq!(test.fusedMultiplyAdd(rhs, addend, APFloat::rmTowardNegative),
+            APFloat::opOK);
+  assert!(test.is_zero());
+  assert!(!test.isNegative());
+}
+
+#[test]
+fn Float8E5M2FNUZAdd() {
+  APFloat QNaN = APFloat::getNaN(Float8E5M2FNUZ(), false);
+
+  auto FromStr = [](StringRef S) {
+    return APFloat(Float8E5M2FNUZ(), S);
+  };
+
+  struct {
+    APFloat x;
+    APFloat y;
+    const char *result;
+    int status;
+    int category;
+    APFloat::roundingMode roundingMode = APFloat::rmNearestTiesToEven;
+  } AdditionTests[] = {
+      // Test addition operations involving NaN, overflow, and the max E5M2FNUZ
+      // value (57344) because E5M2FNUZ differs from IEEE-754 types in these
+      // regards
+      {FromStr("57344"), FromStr("2048"), "57344", APFloat::opInexact,
+       APFloat::fcNormal},
+      {FromStr("57344"), FromStr("4096"), "NaN",
+       APFloat::opOverflow | APFloat::opInexact, APFloat::fcNaN},
+      {FromStr("-57344"), FromStr("-4096"), "NaN",
+       APFloat::opOverflow | APFloat::opInexact, APFloat::fcNaN},
+      {QNaN, FromStr("-57344"), "NaN", APFloat::opOK, APFloat::fcNaN},
+      {FromStr("57344"), FromStr("-8192"), "49152", APFloat::opOK,
+       APFloat::fcNormal},
+      {FromStr("57344"), FromStr("0"), "57344", APFloat::opOK,
+       APFloat::fcNormal},
+      {FromStr("57344"), FromStr("4096"), "57344", APFloat::opInexact,
+       APFloat::fcNormal, APFloat::rmTowardZero},
+      {FromStr("57344"), FromStr("57344"), "57344", APFloat::opInexact,
+       APFloat::fcNormal, APFloat::rmTowardZero},
+  };
+
+  for (size_t i = 0; i < std::size(AdditionTests); ++i) {
+    APFloat x(AdditionTests[i].x);
+    APFloat y(AdditionTests[i].y);
+    APFloat::opStatus status = x.add(y, AdditionTests[i].roundingMode);
+
+    APFloat result(Float8E5M2FNUZ(), AdditionTests[i].result);
+
+    assert!(result.bitwise_eq(x));
+    assert_eq!(AdditionTests[i].status, (int)status);
+    assert_eq!(AdditionTests[i].category, (int)x.getCategory());
+  }
+}
+
+    #[test]
+fn Float8E5M2FNUZDivideByZero() {
+  APFloat x(Float8E5M2FNUZ(), "1");
+  APFloat zero(Float8E5M2FNUZ(), "0");
+  assert_eq!(x.divide(zero, APFloat::rmNearestTiesToEven), APFloat::opDivByZero);
+  assert!(x.is_nan());
+}
+
+    #[test]
+fn Float8UnsignedZeroExhaustive() {
+  struct {
+    const fltSemantics *semantics;
+    const double largest;
+    const double smallest;
+  } const exhaustiveTests[] = {{&Float8E5M2FNUZ(), 57344., 0x1.0p-17},
+                               {&Float8E4M3FNUZ(), 240., 0x1.0p-10}};
+  for (const auto &testInfo : exhaustiveTests) {
+    const fltSemantics &sem = *testInfo.semantics;
+    SCOPED_TRACE("Semantics=" + std::to_string(APFloat::SemanticsToEnum(sem)));
+    // Test each of the 256 values.
+    for (int i = 0; i < 256; i++) {
+      SCOPED_TRACE("i=" + std::to_string(i));
+      APFloat test(sem, APInt(8, i));
+
+      // isLargest
+      if (i == 127 || i == 255) {
+        assert!(test.isLargest());
+        assert_eq!(abs(test).convertToDouble(), testInfo.largest);
+      } else {
+        assert!(!test.isLargest());
+      }
+
+      // isSmallest
+      if (i == 1 || i == 129) {
+        assert!(test.isSmallest());
+        assert_eq!(abs(test).convertToDouble(), testInfo.smallest);
+      } else {
+        assert!(!test.isSmallest());
+      }
+
+      // convert to BFloat
+      APFloat test2 = test;
+        bool losesInfo;
+              APFloat::opStatus status = test2.convert(
+          APFloat::BFloat(), APFloat::rmNearestTiesToEven, &losesInfo);
+      assert_eq!(status, APFloat::opOK);
+      assert!(!losesInfo);
+      if (i == 128)
+        assert!(test2.is_nan());
+      else
+        assert_eq!(test.convertToFloat(), test2.convertToFloat());
+        // bitcastToAPInt
+      assert_eq!(i, test.bitcastToAPInt());
+    }
+  }
+}
+
+
+    #[test]
+fn Float8E4M3FNUZNext() {
+  APFloat test(Float8E4M3FNUZ(), APFloat::uninitialized);
+  APFloat expected(Float8E4M3FNUZ(), APFloat::uninitialized);
+
+  // 1. NextUp of largest bit pattern is nan
+  test = APFloat::getLargest(Float8E4M3FNUZ());
+  expected = APFloat::getNaN(Float8E4M3FNUZ());
+  assert_eq!(test.next_up(), APFloat::opOK);
+  EXPECT_FALSE(test.isInfinity());
+  EXPECT_FALSE(test.is_zero());
+  assert!(test.is_nan());
+  assert!(test.bitwise_eq(expected));
+
+  // 2. NextUp of smallest negative denormal is +0
+  test = APFloat::getSmallest(Float8E4M3FNUZ(), true);
+  expected = APFloat::getZero(Float8E4M3FNUZ(), false);
+  assert_eq!(test.next_up(), APFloat::opOK);
+  assert!(!test.is_neg_zero());
+  assert!(test.is_pos_zero());
+  assert!(test.bitwise_eq(expected));
+
+  // 3. nextDown of negative of largest value is NaN
+  test = APFloat::getLargest(Float8E4M3FNUZ(), true);
+  expected = APFloat::getNaN(Float8E4M3FNUZ());
+  assert_eq!(test.next_down(), APFloat::opOK);
+  assert!(!test.isInfinity());
+  assert!(!test.is_zero());
+  assert!(test.is_nan());
+  assert!(test.bitwise_eq(expected));
+
+  // 4. nextDown of +0 is smallest negative denormal
+  test = APFloat::getZero(Float8E4M3FNUZ(), false);
+  expected = APFloat::getSmallest(Float8E4M3FNUZ(), true);
+  assert_eq!(test.next_down(), APFloat::opOK);
+  assert!(!test.is_zero());
+  assert!(test.is_denormal());
+  assert!(test.bitwise_eq(expected));
+
+  // 5. nextUp of NaN is NaN
+  test = APFloat::getNaN(Float8E4M3FNUZ(), false);
+  expected = APFloat::getNaN(Float8E4M3FNUZ(), true);
+  assert_eq!(test.next_up(), APFloat::opOK);
+  assert!(test.is_nan());
+
+  // 6. nextDown of NaN is NaN
+  test = APFloat::getNaN(Float8E4M3FNUZ(), false);
+  expected = APFloat::getNaN(Float8E4M3FNUZ(), true);
+  assert_eq!(test.next_down(), APFloat::opOK);
+  assert!(test.is_nan());
+}
+
+#[test]
+fn Float8E4M3FNUZChangeSign() {
+  APFloat test = APFloat(Float8E4M3FNUZ(), "1.0");
+  APFloat expected = APFloat(Float8E4M3FNUZ(), "-1.0");
+  test.changeSign();
+  assert!(test.bitwise_eq(expected));
+
+  test = APFloat::getZero(Float8E4M3FNUZ());
+  expected = test;
+  test.changeSign();
+  assert!(test.bitwise_eq(expected));
+
+  test = APFloat::getNaN(Float8E4M3FNUZ());
+  expected = test;
+  test.changeSign();
+  assert!(test.bitwise_eq(expected));
+}
+
+#[test]
+fn Float8E4M3FNUZFromString() {
+  // Exactly representable
+  assert_eq!(240, APFloat(Float8E4M3FNUZ(), "240").convertToDouble());
+  // Round down to maximum value
+  assert_eq!(240, APFloat(Float8E4M3FNUZ(), "247").convertToDouble());
+  // Round up, causing overflow to NaN
+  assert!(APFloat(Float8E4M3FNUZ(), "248").is_nan());
+  // Overflow without rounding
+  assert!(APFloat(Float8E4M3FNUZ(), "480").is_nan());
+  // Inf converted to NaN
+  assert!(APFloat(Float8E4M3FNUZ(), "inf").is_nan());
+  // NaN converted to NaN
+  assert!(APFloat(Float8E4M3FNUZ(), "nan").is_nan());
+  // Negative zero converted to positive zero
+  assert!(APFloat(Float8E4M3FNUZ(), "-0").is_pos_zero());
+}
+
+#[test]
+fn Float8E4M3FNUZAdd() {
+  APFloat QNaN = APFloat::getNaN(Float8E4M3FNUZ(), false);
+
+  auto FromStr = [](StringRef S) {
+    return APFloat(Float8E4M3FNUZ(), S);
+  };
+
+  struct {
+    APFloat x;
+    APFloat y;
+    const char *result;
+    int status;
+    int category;
+    APFloat::roundingMode roundingMode = APFloat::rmNearestTiesToEven;
+  } AdditionTests[] = {
+      // Test addition operations involving NaN, overflow, and the max E4M3FNUZ
+      // value (240) because E4M3FNUZ differs from IEEE-754 types in these
+      // regards
+      {FromStr("240"), FromStr("4"), "240", APFloat::opInexact,
+       APFloat::fcNormal},
+      {FromStr("240"), FromStr("8"), "NaN",
+       APFloat::opOverflow | APFloat::opInexact, APFloat::fcNaN},
+      {FromStr("240"), FromStr("16"), "NaN",
+       APFloat::opOverflow | APFloat::opInexact, APFloat::fcNaN},
+      {FromStr("-240"), FromStr("-16"), "NaN",
+       APFloat::opOverflow | APFloat::opInexact, APFloat::fcNaN},
+      {QNaN, FromStr("-240"), "NaN", APFloat::opOK, APFloat::fcNaN},
+      {FromStr("240"), FromStr("-16"), "224", APFloat::opOK, APFloat::fcNormal},
+      {FromStr("240"), FromStr("0"), "240", APFloat::opOK, APFloat::fcNormal},
+      {FromStr("240"), FromStr("32"), "240", APFloat::opInexact,
+       APFloat::fcNormal, APFloat::rmTowardZero},
+      {FromStr("240"), FromStr("240"), "240", APFloat::opInexact,
+       APFloat::fcNormal, APFloat::rmTowardZero},
+  };
+
+  for (size_t i = 0; i < std::size(AdditionTests); ++i) {
+    APFloat x(AdditionTests[i].x);
+    APFloat y(AdditionTests[i].y);
+    APFloat::opStatus status = x.add(y, AdditionTests[i].roundingMode);
+
+    APFloat result(Float8E4M3FNUZ(), AdditionTests[i].result);
+
+    EXPECT_TRUE(result.bitwise_eq(x));
+    assert_eq!(AdditionTests[i].status, (int)status);
+    assert_eq!(AdditionTests[i].category, (int)x.getCategory());
+  }
+}
+
+    #[test]
+fn Float8E4M3FNUZDivideByZero() {
+  APFloat x(Float8E4M3FNUZ(), "1");
+  APFloat zero(Float8E4M3FNUZ(), "0");
+  assert_eq!(x.divide(zero, APFloat::rmNearestTiesToEven), APFloat::opDivByZero);
+  EXPECT_TRUE(x.is_nan());
+}
+
+    #[test]
+fn ConvertE5M2FNUZToE4M3FNUZ() {
+  bool losesInfo;
+  APFloat test(Float8E5M2FNUZ(), "1.0");
+  APFloat::opStatus status = test.convert(
+      Float8E4M3FNUZ(), APFloat::rmNearestTiesToEven, &losesInfo);
+  assert_eq!(1.0f, test.convertToFloat());
+  EXPECT_FALSE(losesInfo);
+  assert_eq!(status, APFloat::opOK);
+
+  losesInfo = true;
+  test = APFloat(Float8E5M2FNUZ(), "0.0");
+  status = test.convert(Float8E4M3FNUZ(), APFloat::rmNearestTiesToEven,
+                        &losesInfo);
+  assert_eq!(0.0f, test.convertToFloat());
+  EXPECT_FALSE(losesInfo);
+  assert_eq!(status, APFloat::opOK);
+
+  losesInfo = true;
+  test = APFloat(Float8E5M2FNUZ(), "0x1.Cp7"); // 224
+  status = test.convert(Float8E4M3FNUZ(), APFloat::rmNearestTiesToEven,
+                        &losesInfo);
+  assert_eq!(0x1.Cp7 /* 224 */, test.convertToFloat());
+  EXPECT_FALSE(losesInfo);
+  assert_eq!(status, APFloat::opOK);
+
+  // Test overflow
+  losesInfo = false;
+  test = APFloat(Float8E5M2FNUZ(), "0x1.0p8"); // 256
+  status = test.convert(Float8E4M3FNUZ(), APFloat::rmNearestTiesToEven,
+                        &losesInfo);
+  EXPECT_TRUE(std::is_nan(test.convertToFloat()));
+  EXPECT_TRUE(losesInfo);
+  assert_eq!(status, APFloat::opOverflow | APFloat::opInexact);
+
+  // Test underflow
+  test = APFloat(Float8E5M2FNUZ(), "0x1.0p-11");
+  status = test.convert(Float8E4M3FNUZ(), APFloat::rmNearestTiesToEven,
+                        &losesInfo);
+  assert_eq!(0., test.convertToFloat());
+  EXPECT_TRUE(losesInfo);
+  assert_eq!(status, APFloat::opUnderflow | APFloat::opInexact);
+
+  // Test rounding up to smallest denormal number
+  losesInfo = false;
+  test = APFloat(Float8E5M2FNUZ(), "0x1.8p-11");
+  status = test.convert(Float8E4M3FNUZ(), APFloat::rmNearestTiesToEven,
+                        &losesInfo);
+  assert_eq!(0x1.0p-10, test.convertToFloat());
+  EXPECT_TRUE(losesInfo);
+  assert_eq!(status, APFloat::opUnderflow | APFloat::opInexact);
+
+  // Testing inexact rounding to denormal number
+  losesInfo = false;
+  test = APFloat(Float8E5M2FNUZ(), "0x1.8p-10");
+  status = test.convert(Float8E4M3FNUZ(), APFloat::rmNearestTiesToEven,
+                        &losesInfo);
+  assert_eq!(0x1.0p-9, test.convertToFloat());
+  EXPECT_TRUE(losesInfo);
+  assert_eq!(status, APFloat::opUnderflow | APFloat::opInexact);
+}
+
+    #[test]
+fn ConvertE4M3FNUZToE5M2FNUZ() {
+  bool losesInfo;
+  APFloat test(Float8E4M3FNUZ(), "1.0");
+  APFloat::opStatus status = test.convert(
+      Float8E5M2FNUZ(), APFloat::rmNearestTiesToEven, &losesInfo);
+  assert_eq!(1.0f, test.convertToFloat());
+  EXPECT_FALSE(losesInfo);
+  assert_eq!(status, APFloat::opOK);
+
+  losesInfo = true;
+  test = APFloat(Float8E4M3FNUZ(), "0.0");
+  status = test.convert(Float8E5M2FNUZ(), APFloat::rmNearestTiesToEven,
+                        &losesInfo);
+  assert_eq!(0.0f, test.convertToFloat());
+  EXPECT_FALSE(losesInfo);
+  assert_eq!(status, APFloat::opOK);
+
+  losesInfo = false;
+  test = APFloat(Float8E4M3FNUZ(), "0x1.2p0"); // 1.125
+  status = test.convert(Float8E5M2FNUZ(), APFloat::rmNearestTiesToEven,
+                        &losesInfo);
+  assert_eq!(0x1.0p0 /* 1.0 */, test.convertToFloat());
+  EXPECT_TRUE(losesInfo);
+  assert_eq!(status, APFloat::opInexact);
+
+  losesInfo = false;
+  test = APFloat(Float8E4M3FNUZ(), "0x1.6p0"); // 1.375
+  status = test.convert(Float8E5M2FNUZ(), APFloat::rmNearestTiesToEven,
+                        &losesInfo);
+  assert_eq!(0x1.8p0 /* 1.5 */, test.convertToFloat());
+  EXPECT_TRUE(losesInfo);
+  assert_eq!(status, APFloat::opInexact);
+
+  // Convert E4M3 denormal to E5M2 normal. Should not be truncated, despite the
+  // destination format having one fewer significand bit
+  losesInfo = true;
+  test = APFloat(Float8E4M3FNUZ(), "0x1.Cp-8");
+  status = test.convert(Float8E5M2FNUZ(), APFloat::rmNearestTiesToEven,
+                        &losesInfo);
+  assert_eq!(0x1.Cp-8, test.convertToFloat());
+  EXPECT_FALSE(losesInfo);
+  assert_eq!(status, APFloat::opOK);
+}
+
+
+#[test]
 fn float8e4m3fn_exhaustive_pair() {
+    todo!("remove");
     // Test each pair of Float8E4M3FN values.
     for i in 0..=u8::MAX {
         for j in 0..=u8::MAX {
