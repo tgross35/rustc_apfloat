@@ -1,6 +1,6 @@
 //! Port of LLVM's APFloat software floating-point implementation from the
 //! following C++ sources (please update commit hash when backporting):
-//! <https://github.com/llvm/llvm-project/commit/462a31f5a5abb905869ea93cc49b096079b11aa4>
+//! <https://github.com/llvm/llvm-project/commit/038f7debfda01471ce0d4eb1fed20da61e5c8b32>
 //! * `llvm/include/llvm/ADT/APFloat.h` -> `Float` and `FloatConvert` traits
 //! * `llvm/lib/Support/APFloat.cpp` -> `ieee` and `ppc` modules
 //! * `llvm/unittests/ADT/APFloatTest.cpp` -> `tests` directory
@@ -30,7 +30,6 @@
 //! This API is completely unstable and subject to change.
 
 #![no_std]
-#![deny(warnings)]
 #![forbid(unsafe_code)]
 
 #[macro_use]
@@ -92,6 +91,8 @@ impl<T> StatusAnd<T> {
 
 impl<T: core::fmt::Debug> StatusAnd<T> {
     /// Extract the inner value if there were no errors. If there were errors, panic.
+    #[inline]
+    #[track_caller]
     pub fn unwrap(self) -> T {
         assert_eq!(self.status, Status::OK, "called `StatusAnd::unwrap()` on an error value. Value: {:?}", self.value);
         self.value
@@ -275,6 +276,16 @@ pub trait Float:
     /// NaN (Not a Number).
     // FIXME(eddyb) provide a default when qnan becomes const fn.
     const NAN: Self;
+
+    /// Number of bits needed to represent the largest integer that
+    /// the floating point type can hold.
+    // FIXME should be const fn.
+    fn max_int_bits(signed: bool) -> usize {
+        // The max FP value is pow(2, MaxExponent) * (1 + MaxFraction), so we need
+        // at least one more bit than the MaxExponent to hold the max FP value.
+        // Another extra sign bit is needed for signed integers.
+        Self::MAX_EXP as usize + 1 + (signed as usize)
+    }
 
     /// Factory for QNaN values.
     // FIXME(eddyb) should be const fn.
